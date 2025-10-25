@@ -18,7 +18,7 @@ logging.basicConfig(
 # --- Configurações ---
 ANKI_CONNECT_URL = "http://localhost:8765"
 DECK_NAME = "ENGLISH-A2"
-GEMINI_MODEL = "gemini-1.0-pro"
+GEMINI_MODEL = "gemini-2.5-flash" #"gemini-1.0-pro"
 REQUEST_DELAY_SECONDS = 10
 
 # --- Gerenciamento de Chaves de API ---

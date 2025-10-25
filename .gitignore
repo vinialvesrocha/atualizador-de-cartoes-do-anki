@@ -4,6 +4,7 @@ __pycache__/
 
 # Ambiente virtual
 .venv/
+venv/
 env/
 
 # Arquivos de configuração da IDE
