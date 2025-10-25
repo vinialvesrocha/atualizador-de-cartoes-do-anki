@@ -1,0 +1,17 @@
+# Arquivos compilados do Python
+__pycache__/
+*.py[cod]
+
+# Ambiente virtual
+.venv/
+env/
+
+# Arquivos de configuração da IDE
+.vscode/
+.idea/
+
+# Variáveis de ambiente
+.env
+
+# Logs
+*.log
