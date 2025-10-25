@@ -18,11 +18,11 @@ logging.basicConfig(
 # --- Configurações ---
 ANKI_CONNECT_URL = "http://localhost:8765"
 DECK_NAME = "ENGLISH-A2"
-GEMINI_MODEL = "gemini-2.5-flash" #"gemini-1.0-pro"
+GEMINI_MODEL = "gemini-1.0-pro"
 REQUEST_DELAY_SECONDS = 10
 
 # --- Gerenciamento de Chaves de API ---
-API_KEYS = ["AIzaSyCpHH7k1v5M7_3im0_MARj0m2X4ToKkTuc", "AIzaSyAAfy-TkFamePJM0y1k8ANCNRdGqPpRL4A", "AIzaSyDpBN1p4XrqXY3tCA3f6j_dKjt1E66gXAE", "AIzaSyBaMtKxTt07DIFkqJD_IE6pIR6Q7gh_9a8", "AIzaSyBigmLPFiXQdIEUGY6ufnO20NFhtij4GAE", "AIzaSyAMQt7r3oLX3ONQD4jDaJpEr6O8ceMFhHI", "AIzaSyAEQxzGxpP18zCNeOKNTy61gzxbRnTiPGA", "AIzaSyDwiPbK_eV150uJ9IqyoMIXQRIblrK8msM"]
+API_KEYS = []
 CURRENT_KEY_INDEX = 0
 
 def setup_api_keys():
@@ -86,7 +86,8 @@ def generative_request_with_retry(prompt):
         response = model.generate_content(prompt)
         return response.text.strip()
     except Exception as e:
-        if "429" in str(e) and "resource has been exhausted" in str(e).lower():
+        # A detecção de erro de cota foi aprimorada para ser mais flexível.
+        if "429" in str(e) and "quota" in str(e).lower():
             logging.warning(f"API Key #{CURRENT_KEY_INDEX + 1} has reached its limit.")
             CURRENT_KEY_INDEX += 1
             if switch_to_key(CURRENT_KEY_INDEX):
