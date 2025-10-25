@@ -18,7 +18,7 @@ logging.basicConfig(
 # --- Configurações ---
 ANKI_CONNECT_URL = "http://localhost:8765"
 DECK_NAME = "ENGLISH-A2"
-GEMINI_MODEL = "gemini-pro"
+GEMINI_MODEL = "gemini-1.0-pro"
 REQUEST_DELAY_SECONDS = 10
 
 # --- Gerenciamento de Chaves de API ---
@@ -57,6 +57,26 @@ def switch_to_key(key_index):
         logging.error(f"Failed to configure API Key #{key_index + 1}: {e}")
         return False
 
+def verify_model_availability():
+    """Verifica se o modelo configurado está disponível para a chave de API atual."""
+    try:
+        available_models = [m.name for m in genai.list_models()]
+
+        # O nome do modelo na API pode ser 'models/gemini-1.0-pro'
+        if f'models/{GEMINI_MODEL}' in available_models:
+            logging.info(f"Model '{GEMINI_MODEL}' is available.")
+            return True
+        else:
+            logging.error(f"Model '{GEMINI_MODEL}' is not available for your API key.")
+            logging.error("Please choose one of the available models and update the GEMINI_MODEL variable in the script.")
+            # Filtra e formata a lista de modelos relevantes para geração de conteúdo
+            generative_models = [name.replace('models/', '') for name in available_models if 'generateContent' in genai.get_model(name).supported_generation_methods]
+            logging.error(f"Available generative models: {generative_models}")
+            return False
+    except Exception as e:
+        logging.error(f"Could not verify model availability. Error: {e}")
+        return False
+
 def generative_request_with_retry(prompt):
     """Faz uma requisição à API Gemini com lógica de troca de chave em caso de erro de cota."""
     global CURRENT_KEY_INDEX
@@ -66,12 +86,14 @@ def generative_request_with_retry(prompt):
         response = model.generate_content(prompt)
         return response.text.strip()
     except Exception as e:
-        # Verifica se o erro é de cota (HTTP 429)
         if "429" in str(e) and "resource has been exhausted" in str(e).lower():
             logging.warning(f"API Key #{CURRENT_KEY_INDEX + 1} has reached its limit.")
             CURRENT_KEY_INDEX += 1
             if switch_to_key(CURRENT_KEY_INDEX):
                 logging.info("Retrying with the new key...")
+                # Após trocar a chave, precisamos verificar o modelo novamente com a nova chave.
+                if not verify_model_availability():
+                    return None
                 try:
                     model = genai.GenerativeModel(GEMINI_MODEL)
                     response = model.generate_content(prompt)
@@ -80,16 +102,13 @@ def generative_request_with_retry(prompt):
                     logging.error(f"Retry failed with new key: {retry_e}")
                     return None
             else:
-                # Todas as chaves foram esgotadas
                 return None
         else:
-            # Outro tipo de erro
             logging.error(f"An unexpected error occurred with the Gemini API: {e}")
             return None
 
 # --- Funções Anki ---
 def anki_request(action, **params):
-    """Função genérica para fazer requisições ao AnkiConnect."""
     payload = {"action": action, "version": 6, "params": params}
     try:
         response = requests.post(ANKI_CONNECT_URL, json=payload)
@@ -153,6 +172,10 @@ def main():
     if not setup_api_keys():
         return
 
+    # Verifica a disponibilidade do modelo antes de começar
+    if not verify_model_availability():
+        return
+
     note_ids = fetch_due_notes()
     if not note_ids:
         logging.info("No due notes found today or failed to fetch notes. Exiting.")
@@ -172,13 +195,10 @@ def main():
             note_id = note["noteId"]
             pbar.set_postfix_str(f"Processing {note_id}")
 
-            # Checa se ainda temos uma chave de API válida
             if CURRENT_KEY_INDEX >= len(API_KEYS):
                 logging.error("Stopping script: All API keys have been exhausted.")
                 break
 
-            # Processamento da nota...
-            # (O restante do loop permanece o mesmo)
             model_name = note["modelName"]
             fields = note["fields"]
             
