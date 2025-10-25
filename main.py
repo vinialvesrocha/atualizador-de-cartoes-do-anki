@@ -1,5 +1,4 @@
 import requests
-import json
 import os
 import time
 import google.generativeai as genai
@@ -19,78 +18,116 @@ logging.basicConfig(
 # --- Configurações ---
 ANKI_CONNECT_URL = "http://localhost:8765"
 DECK_NAME = "ENGLISH-A2"
-GEMINI_MODEL = "gemini-1.5-flash"  # Modelo de IA a ser usado
-REQUEST_DELAY_SECONDS = 10  # Pausa em segundos entre cada nota
+GEMINI_MODEL = "gemini-pro"
+REQUEST_DELAY_SECONDS = 10
 
-try:
-    gemini_api_key = os.getenv("GEMINI_API_KEY")
-    if not gemini_api_key:
-        raise ValueError("GEMINI_API_KEY not found in environment variables.")
-    genai.configure(api_key=gemini_api_key)
-    logging.info("Google AI SDK configured successfully.")
-except (ValueError, Exception) as e:
-    logging.error(f"Fatal error during Gemini configuration: {e}")
-    exit()
+# --- Gerenciamento de Chaves de API ---
+API_KEYS = []
+CURRENT_KEY_INDEX = 0
 
+def setup_api_keys():
+    """Carrega as chaves de API da variável de ambiente."""
+    global API_KEYS, CURRENT_KEY_INDEX
+    keys_string = os.getenv("GEMINI_API_KEY")
+    if not keys_string:
+        logging.error("Fatal: GEMINI_API_KEY environment variable not found.")
+        return False
 
-# --- Funções ---
+    API_KEYS = [key.strip() for key in keys_string.split(',')]
+    if not API_KEYS:
+        logging.error("Fatal: No API keys found in GEMINI_API_KEY.")
+        return False
+
+    logging.info(f"Loaded {len(API_KEYS)} API key(s).")
+    CURRENT_KEY_INDEX = 0
+    return switch_to_key(CURRENT_KEY_INDEX)
+
+def switch_to_key(key_index):
+    """Muda para uma chave de API específica e a configura."""
+    if key_index >= len(API_KEYS):
+        logging.error("All API keys have reached their usage limit.")
+        return False
+
+    try:
+        api_key = API_KEYS[key_index]
+        genai.configure(api_key=api_key)
+        logging.info(f"Switched to API Key #{key_index + 1}.")
+        return True
+    except Exception as e:
+        logging.error(f"Failed to configure API Key #{key_index + 1}: {e}")
+        return False
+
+def generative_request_with_retry(prompt):
+    """Faz uma requisição à API Gemini com lógica de troca de chave em caso de erro de cota."""
+    global CURRENT_KEY_INDEX
+
+    try:
+        model = genai.GenerativeModel(GEMINI_MODEL)
+        response = model.generate_content(prompt)
+        return response.text.strip()
+    except Exception as e:
+        # Verifica se o erro é de cota (HTTP 429)
+        if "429" in str(e) and "resource has been exhausted" in str(e).lower():
+            logging.warning(f"API Key #{CURRENT_KEY_INDEX + 1} has reached its limit.")
+            CURRENT_KEY_INDEX += 1
+            if switch_to_key(CURRENT_KEY_INDEX):
+                logging.info("Retrying with the new key...")
+                try:
+                    model = genai.GenerativeModel(GEMINI_MODEL)
+                    response = model.generate_content(prompt)
+                    return response.text.strip()
+                except Exception as retry_e:
+                    logging.error(f"Retry failed with new key: {retry_e}")
+                    return None
+            else:
+                # Todas as chaves foram esgotadas
+                return None
+        else:
+            # Outro tipo de erro
+            logging.error(f"An unexpected error occurred with the Gemini API: {e}")
+            return None
+
+# --- Funções Anki ---
 def anki_request(action, **params):
     """Função genérica para fazer requisições ao AnkiConnect."""
     payload = {"action": action, "version": 6, "params": params}
     try:
         response = requests.post(ANKI_CONNECT_URL, json=payload)
-        response.raise_for_status()  # Lança um erro para status HTTP 4xx/5xx
+        response.raise_for_status()
         response_json = response.json()
         if response_json.get("error"):
             logging.error(f"AnkiConnect error for action '{action}': {response_json['error']}")
             return None
         return response_json.get("result")
     except requests.exceptions.RequestException as e:
-        logging.error(f"Could not connect to AnkiConnect at {ANKI_CONNECT_URL}. Is Anki running with AnkiConnect? Error: {e}")
+        logging.error(f"Could not connect to AnkiConnect at {ANKI_CONNECT_URL}. Is Anki running? Error: {e}")
         return None
 
-
 def fetch_due_notes():
-    """Busca todas as notas do deck que possuem cartões devidos hoje."""
     logging.info(f"Searching for due notes in deck '{DECK_NAME}'...")
-    query = f"deck:{DECK_NAME} is:due"
-    note_ids = anki_request("findNotes", query=query)
-    if note_ids is None:
-        logging.error("Failed to fetch due notes.")
+    note_ids = anki_request("findNotes", query=f"deck:{DECK_NAME} is:due")
     return note_ids if note_ids is not None else []
 
-
 def get_note_details(note_ids):
-    """Obtém detalhes de uma lista de notas pelo ID."""
     logging.info(f"Fetching details for {len(note_ids)} notes...")
-    notes_info = anki_request("notesInfo", notes=note_ids)
-    return notes_info if notes_info is not None else []
+    return anki_request("notesInfo", notes=note_ids) or []
 
-
+# --- Funções de Geração de Conteúdo ---
 def generate_term(original_sentence, translation):
-    """Extrai o termo principal da frase usando IA."""
     logging.info(f"Generating term from sentence: '{original_sentence}'")
-    model = genai.GenerativeModel(GEMINI_MODEL)
     prompt = (
         f"Given the English sentence: '{original_sentence}'\n"
         f"And its Portuguese translation: '{translation}'\n\n"
         "Identify the single most important key word or short phrase from the English sentence that is the focus of study. "
         "Return ONLY the key word or phrase, with no extra text or explanations."
     )
-    try:
-        response = model.generate_content(prompt)
-        term = response.text.strip()
+    term = generative_request_with_retry(prompt)
+    if term:
         logging.info(f"Generated term: '{term}'")
-        return term
-    except Exception as e:
-        logging.error(f"Error generating term for sentence '{original_sentence}': {e}")
-        return None
-
+    return term
 
 def generate_sentence(term, original_sentence):
-    """Gera uma nova frase para um termo, baseada na original."""
     logging.info(f"Generating a new sentence for term: '{term}'")
-    model = genai.GenerativeModel(GEMINI_MODEL)
     prompt = (
         f"You are an English teacher creating a new example sentence for a student.\n"
         f"The student is studying the key word/phrase: '{term}'\n"
@@ -98,48 +135,24 @@ def generate_sentence(term, original_sentence):
         f"Create a completely new, different English sentence that also uses '{term}' correctly. "
         "The new sentence should be natural and easy to understand. Do not repeat the original sentence."
     )
-    try:
-        response = model.generate_content(prompt)
-        new_sentence = response.text.strip()
+    new_sentence = generative_request_with_retry(prompt)
+    if new_sentence:
         logging.info(f"Generated new sentence: '{new_sentence}'")
-        return new_sentence
-    except Exception as e:
-        logging.error(f"Error generating sentence for term '{term}': {e}")
-        return None
+    return new_sentence
 
-
-def add_generated_sentence_field(note_id):
-    """Adiciona o campo GeneratedSentence ao modelo da nota, caso não exista."""
-    logging.warning(f"Field 'GeneratedSentence' not found in note {note_id}. Attempting to add it.")
-    # Esta função é um paliativo. A melhor forma é o usuário adicionar o campo manualmente no Anki.
-    # A API do AnkiConnect não tem uma forma direta de adicionar campos, apenas de atualizar.
-    # Esta chamada vai falhar se o campo não existir, mas registramos o aviso.
-    update_payload = {
-        "note": {
-            "id": note_id,
-            "fields": {"GeneratedSentence": " "} # Adiciona um espaço para inicializar
-        }
-    }
-    result = anki_request("updateNoteFields", **update_payload)
-    if result is None:
-        logging.error(f"Could not add/update 'GeneratedSentence' field for note {note_id}. Please add it manually to your Note Type in Anki.")
-
+# --- Funções de Atualização do Anki ---
 def update_generated_sentence(note_id, new_sentence):
-    """Atualiza o campo GeneratedSentence de uma nota no Anki."""
     logging.info(f"Updating note {note_id} with new sentence.")
-    update_payload = {
-        "note": {
-            "id": note_id,
-            "fields": {"GeneratedSentence": new_sentence}
-        }
-    }
-    result = anki_request("updateNoteFields", **update_payload)
-    if result is None:
+    update_payload = {"note": {"id": note_id, "fields": {"GeneratedSentence": new_sentence}}}
+    if anki_request("updateNoteFields", **update_payload) is None:
         logging.error(f"Failed to update note {note_id}.")
 
 # --- Main ---
 def main():
     logging.info("--- Starting Anki Updater Script ---")
+    if not setup_api_keys():
+        return
+
     note_ids = fetch_due_notes()
     if not note_ids:
         logging.info("No due notes found today or failed to fetch notes. Exiting.")
@@ -157,14 +170,21 @@ def main():
     with tqdm(total=total_notes, desc="Updating Anki Cards") as pbar:
         for i, note in enumerate(notes):
             note_id = note["noteId"]
+            pbar.set_postfix_str(f"Processing {note_id}")
+
+            # Checa se ainda temos uma chave de API válida
+            if CURRENT_KEY_INDEX >= len(API_KEYS):
+                logging.error("Stopping script: All API keys have been exhausted.")
+                break
+
+            # Processamento da nota...
+            # (O restante do loop permanece o mesmo)
             model_name = note["modelName"]
             fields = note["fields"]
             
-            pbar.set_postfix_str(f"Processing {note_id} ({model_name})")
-            logging.info(f"Processing note ID: {note_id}, Model: {model_name}, Fields: {list(fields.keys())}")
+            logging.info(f"Processing note ID: {note_id}, Model: {model_name}")
 
-            term = None
-            original_sentence = None
+            term, original_sentence = None, None
 
             if model_name == "YTLearner-Advanced":
                 term = fields.get("Term", {}).get("value")
@@ -182,19 +202,14 @@ def main():
                 continue
 
             if not term or not original_sentence:
-                logging.warning(f"Skipping note {note_id} due to missing required fields or term extraction failure.")
+                logging.warning(f"Skipping note {note_id} due to missing fields or term extraction failure.")
                 pbar.update(1)
                 continue
 
-            # Verifica a existência do campo e tenta adicioná-lo se necessário
             if "GeneratedSentence" not in fields:
-                add_generated_sentence_field(note_id)
-                # Recarrega os detalhes da nota para ver se o campo foi adicionado
-                note_details = get_note_details([note_id])
-                if not note_details or "GeneratedSentence" not in note_details[0]["fields"]:
-                    logging.error(f"Skipping note {note_id} because 'GeneratedSentence' field could not be added or found.")
-                    pbar.update(1)
-                    continue
+                 logging.warning(f"Skipping note {note_id}: 'GeneratedSentence' field not found. Please add it to the '{model_name}' Note Type in Anki.")
+                 pbar.update(1)
+                 continue
 
             new_sentence = generate_sentence(term, original_sentence)
             if new_sentence:
@@ -209,7 +224,7 @@ def main():
                 pbar.set_postfix_str(f"Waiting for {REQUEST_DELAY_SECONDS}s...")
                 time.sleep(REQUEST_DELAY_SECONDS)
 
-    logging.info(f"--- Script Finished ---")
+    logging.info("--- Script Finished ---")
     logging.info(f"Total notes processed: {total_notes}")
     logging.info(f"Successfully updated notes: {updated_count}")
 
