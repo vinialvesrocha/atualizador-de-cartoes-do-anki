@@ -18,7 +18,7 @@ logging.basicConfig(
 # --- Configurações ---
 ANKI_CONNECT_URL = "http://localhost:8765"
 DECK_NAME = "ENGLISH-A2"
-GEMINI_MODEL = "gemini-2.5-flash" #"gemini-1.0-pro"
+GEMINI_MODEL = "gemini-1.0-pro"
 REQUEST_DELAY_SECONDS = 10
 
 # --- Gerenciamento de Chaves de API ---
@@ -146,24 +146,47 @@ def generate_term(original_sentence, translation):
         logging.info(f"Generated term: '{term}'")
     return term
 
-def generate_sentence(term, original_sentence):
-    logging.info(f"Generating a new sentence for term: '{term}'")
+def generate_sentence_and_translation(term, original_sentence):
+    """Gera uma nova frase e sua tradução em uma única chamada de API."""
+    logging.info(f"Generating new sentence and translation for term: '{term}'")
     prompt = (
-        f"You are an English teacher creating a new example sentence for a student.\n"
-        f"The student is studying the key word/phrase: '{term}'\n"
-        f"Their current example sentence is: '{original_sentence}'\n\n"
-        f"Create a completely new, different English sentence that also uses '{term}' correctly. "
-        "The new sentence should be natural and easy to understand. Do not repeat the original sentence."
+        f"You are an English teacher creating learning materials for a Brazilian student.\n"
+        f"The student is studying the key word/phrase: '{term}'.\n"
+        f"Their current example sentence is: '{original_sentence}'.\n\n"
+        f"Perform the following two tasks:\n"
+        f"1. Create a completely new, different, and natural English sentence that correctly uses '{term}'.\n"
+        f"2. Translate that new English sentence into Brazilian Portuguese.\n\n"
+        f"Your response MUST be in the following format, with no extra text or explanations:\n"
+        f"New English Sentence|||Sua Tradução em Português"
     )
-    new_sentence = generative_request_with_retry(prompt)
-    if new_sentence:
-        logging.info(f"Generated new sentence: '{new_sentence}'")
-    return new_sentence
+
+    response = generative_request_with_retry(prompt)
+
+    if response and "|||" in response:
+        parts = response.split("|||")
+        if len(parts) == 2:
+            new_sentence = parts[0].strip()
+            new_translation = parts[1].strip()
+            logging.info(f"Generated Sentence: '{new_sentence}'")
+            logging.info(f"Generated Translation: '{new_translation}'")
+            return new_sentence, new_translation
+
+    logging.error(f"Failed to parse the API response for term '{term}'. Response: '{response}'")
+    return None, None
 
 # --- Funções de Atualização do Anki ---
-def update_generated_sentence(note_id, new_sentence):
-    logging.info(f"Updating note {note_id} with new sentence.")
-    update_payload = {"note": {"id": note_id, "fields": {"GeneratedSentence": new_sentence}}}
+def update_note_fields(note_id, sentence, translation):
+    """Atualiza uma nota no Anki com a nova frase e sua tradução."""
+    logging.info(f"Updating note {note_id} with new sentence and translation.")
+    update_payload = {
+        "note": {
+            "id": note_id,
+            "fields": {
+                "GeneratedSentence": sentence,
+                "GeneratedTranslation": translation
+            }
+        }
+    }
     if anki_request("updateNoteFields", **update_payload) is None:
         logging.error(f"Failed to update note {note_id}.")
 
@@ -227,18 +250,19 @@ def main():
                 pbar.update(1)
                 continue
 
-            if "GeneratedSentence" not in fields:
-                 logging.warning(f"Skipping note {note_id}: 'GeneratedSentence' field not found. Please add it to the '{model_name}' Note Type in Anki.")
+            if "GeneratedSentence" not in fields or "GeneratedTranslation" not in fields:
+                 logging.warning(f"Skipping note {note_id}: Ensure 'GeneratedSentence' and 'GeneratedTranslation' fields exist in the '{model_name}' Note Type in Anki.")
                  pbar.update(1)
                  continue
 
-            new_sentence = generate_sentence(term, original_sentence)
-            if new_sentence:
-                update_generated_sentence(note_id, new_sentence)
+            new_sentence, new_translation = generate_sentence_and_translation(term, original_sentence)
+
+            if new_sentence and new_translation:
+                update_note_fields(note_id, new_sentence, new_translation)
                 updated_count += 1
                 pbar.set_postfix_str(f"Successfully updated {note_id}")
             else:
-                logging.warning(f"Failed to generate a new sentence for note {note_id}.")
+                logging.warning(f"Failed to generate sentence and translation for note {note_id}.")
             
             pbar.update(1)
             if i < total_notes - 1:
