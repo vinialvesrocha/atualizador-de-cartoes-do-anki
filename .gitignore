@@ -4,7 +4,7 @@ __pycache__/
 
 # Ambiente virtual
 .venv/
-env/
+venv/
 
 # Arquivos de configuração da IDE
 .vscode/
